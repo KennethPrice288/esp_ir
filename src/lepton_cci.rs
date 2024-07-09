@@ -3,6 +3,29 @@ use embedded_hal::{i2c::I2c};
 use esp_idf_svc::hal::delay;
 use crate::lepton_error::LepStatus;
 
+macro_rules! generate_get_set_functions {
+    (
+        $set_fn_name:ident, $get_fn_name:ident, $param_ty:ty, $set_command:expr, $get_command:expr
+    ) => {
+        pub fn $set_fn_name(&mut self, value: $param_ty) -> Result<LepStatus, E> {
+            self.write_register(Register::CCIDataReg0, &value.to_be_bytes())?;
+            let command = $set_command;
+            self.write_command(command)?;
+            self.poll_status()?;
+            self.get_status_code()
+        }
+
+        pub fn $get_fn_name(&mut self) -> Result<($param_ty, LepStatus), E> {
+            let command = $get_command;
+            self.write_command(command)?;
+            self.poll_status()?;
+            let data = self.read_register(Register::CCIDataReg0)?;
+            let status_code = self.get_status_code()?;
+            Ok((data.try_into().unwrap(), status_code))
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LEPTONCCI <I2C> {
     i2c: I2C,
@@ -39,52 +62,29 @@ where
         Ok(LepStatus::from(status as i8))
     }
 
+    generate_get_set_functions!(
+        set_oem_video_output_source, get_oem_video_output_source, u16, 
+        LepCommand::set_oem_video_output_source(), 
+        LepCommand::get_oem_video_output_source()
+    );
 
-    pub fn set_phase_delay(&mut self, phase_delay:i16) -> Result<LepStatus, E> {
-        self.write_register(Register::CCIDataReg0, &phase_delay.to_be_bytes())?;
-        let command = LepCommand::set_oem_phase_delay();
-        self.write_command(command)?;
-        self.poll_status()?;
-        self.get_status_code()
-    }
+    generate_get_set_functions!(
+        set_oem_video_output_constant, get_oem_video_output_constant, u16,
+        LepCommand::set_oem_video_output_source_constant(),
+        LepCommand::get_oem_video_output_source_constant()
+    );
+    
+    generate_get_set_functions!(
+       set_gpio_mode, get_gpio_mode, u16, 
+        LepCommand::set_oem_gpio_mode(), 
+        LepCommand::get_oem_gpio_mode()
+    );
 
-
-    pub fn get_phase_delay(&mut self) -> Result<(u16, LepStatus), E> {
-        let command = LepCommand::get_oem_phase_delay();
-        self.write_command(command)?;
-        let data = self.read_register(Register::CCIDataReg0)?;
-        let status_code = self.get_status_code()?;
-        Ok((data, status_code))
-    }
-
-
-    pub fn set_gpio_mode(&mut self, gpio_mode: u16) -> Result<LepStatus, E> {
-        self.write_register(Register::CCIDataReg0, &gpio_mode.to_be_bytes())?;
-        let command = LepCommand::set_oem_gpio_mode();
-        self.write_command(command)?;
-        self.poll_status()?;
-        self.get_status_code()
-    }
-
-
-    pub fn get_gpio_mode(&mut self) -> Result<(u16, LepStatus), E> {
-        let command = LepCommand::get_oem_gpio_mode();
-        self.write_command(command)?;
-        self.poll_status()?;
-        let data = self.read_register(Register::CCIDataReg0)?;
-        let status_code = self.get_status_code()?;
-        Ok((data, status_code))
-    }
-
-
-    pub fn set_oem_video_output_source(&mut self, video_output_source: u16) -> Result<LepStatus, E> {
-        self.write_register(Register::CCIDataReg0, &video_output_source.to_be_bytes())?;
-        let command = LepCommand::set_oem_video_output_source();
-        self.write_command(command)?;
-        self.poll_status()?;
-        self.get_status_code()
-    } 
-
+    generate_get_set_functions!(
+        set_phase_delay, get_phase_delay, i16, 
+         LepCommand::set_oem_phase_delay(), 
+         LepCommand::get_oem_phase_delay()
+     );
 
     /// Writes into a register
     #[allow(unused)]

@@ -1,10 +1,9 @@
-use embedded_hal::spi::SpiBus;
 use embedded_hal::{i2c::I2c, spi};
 use crate::lepton_cci::LEPTONCCI;
 use crate::lepton_error::LepStatus;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 
-const FRAMESIZE:usize = 60*80*2;
+const FRAMESIZE:usize = 164*60;
 
 pub struct Lepton <I2C, SPI> {
     cci: LEPTONCCI<I2C>,
@@ -24,11 +23,11 @@ impl<I2C, SPI, E1, E2> Lepton<I2C, SPI>
         }
 
         pub fn set_phase_delay(&mut self, phase_delay: i16) -> Result<LepStatus, E1> {
-            self.cci.set_phase_delay(phase_delay);
+            self.cci.set_phase_delay(phase_delay)?;
             self.cci.get_status_code()
         }
 
-        pub fn get_phase_delay(&mut self) -> Result<(u16, LepStatus), E1> {
+        pub fn get_phase_delay(&mut self) -> Result<(i16, LepStatus), E1> {
             self.cci.get_phase_delay()
         }
 
@@ -38,6 +37,22 @@ impl<I2C, SPI, E1, E2> Lepton<I2C, SPI>
 
         pub fn get_gpio_mode(&mut self) -> Result<(u16, LepStatus), E1> {
             self.cci.get_gpio_mode()
+        }
+
+        pub fn set_video_output_source(&mut self, source: u16) -> Result<LepStatus, E1> {
+            self.cci.set_oem_video_output_source(source)
+        }
+
+        pub fn get_video_output_source(&mut self) -> Result<(u16, LepStatus), E1> {
+            self.cci.get_oem_video_output_source()
+        }
+
+        pub fn set_video_output_constant(&mut self, constant: u16) -> Result<LepStatus, E1> {
+            self.cci.set_oem_video_output_constant(constant)
+        }
+
+        pub fn get_video_output_constant(&mut self) -> Result<(u16, LepStatus), E1> {
+            self.cci.get_oem_video_output_constant()
         }
 
         pub fn get_boot_status(&mut self) -> Result<bool, E1> {

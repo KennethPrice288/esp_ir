@@ -22,6 +22,7 @@ embedded-hal = "=1.0.0"
 esp-idf-hal = "0.44.1"
 esp-idf-svc  = "=0.49.0"
 log = "0.4.22"
+toml-cfg = "0.2.0"
 
 [build-dependencies]
 embuild = "=0.32.0"

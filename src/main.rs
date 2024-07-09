@@ -2,24 +2,58 @@ use std::num::NonZeroU32;
 
 use anyhow::Result;
 use embedded_hal::delay::DelayNs;
-use esp_idf_svc::hal::{
-    spi,
-    delay::FreeRtos, gpio::{self, PinDriver, InterruptType, Pull}, i2c::{I2cConfig, I2cDriver}, peripherals::Peripherals, prelude::*, spi::{SpiDriver, SPI2},
-    task::notification::Notification
-};
-use esp_idf_hal;
-use log;
+use esp_idf_hal::i2c::I2cError;
+use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::{
+    delay::FreeRtos, gpio::{self, InterruptType, PinDriver}, i2c::{I2cConfig, I2cDriver}, peripherals::Peripherals, prelude::*, spi::{self, SpiDriver}, task::notification::Notification
+}, http::{self, server::EspHttpServer}};
 
-use esp_ir::lepton_error::LepStatus;
+use log;
 
 use esp_ir::lepton::Lepton;
 
+use esp_ir::wifi::wifi;
+
+#[toml_cfg::toml_config]
+pub struct Config {
+    #[default("")]
+    wifi_ssid: &'static str,
+    #[default("")]
+    wifi_psk: &'static str,
+}
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    let sysloop = EspSystemEventLoop::take()?;
 
     let peripherals = Peripherals::take().unwrap();
+
+    //start http server
+    let app_config = CONFIG;
+
+    let _wifi = wifi(
+        app_config.wifi_ssid,
+        app_config.wifi_psk,
+        peripherals.modem,
+        sysloop,
+    )?;
+
+    log::warn!("about to start server");
+
+    let mut server = EspHttpServer::new(&http::server::Configuration::default())?;
+    log::warn!("server started");
+    server.fn_handler(
+        "/",
+        http::Method::Get,
+        |request| -> core::result::Result<(), esp_idf_svc::io::EspIOError> {
+            let html = "hi";
+            let mut response = request.into_ok_response()?;
+            response.write(html.as_bytes())?;
+            Ok(())
+        },
+    )?;
+
+    //setup camera
 
     //setup i2c interface
     let sda = peripherals.pins.gpio7;
@@ -27,6 +61,9 @@ fn main() -> Result<()> {
 
     //setup reset pin
     let mut reset_l = PinDriver::output(peripherals.pins.gpio5)?;
+
+    //setup cs pin
+    let mut cs_l = PinDriver::output(peripherals.pins.gpio2)?;
 
 
     //startup sequence
@@ -39,14 +76,15 @@ fn main() -> Result<()> {
 
 
     let i2c_config = I2cConfig::new().baudrate(400.kHz().into());
-    let mut i2c = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_config)?;
+    let i2c = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_config)?;
 
-    let miso = peripherals.pins.gpio4;
-    let mosi = peripherals.pins.gpio3;
-    let spi_clk = peripherals.pins.gpio2;
+    let miso = peripherals.pins.gpio0;
+    let mosi = peripherals.pins.gpio9;
+    let spi_clk = peripherals.pins.gpio3;
 
     let spi_driver_config = spi::config::DriverConfig::new();
-    let mut spi_driver = SpiDriver::new(
+
+    let spi_driver = SpiDriver::new(
         peripherals.spi2, spi_clk, mosi, Some(miso), &spi_driver_config)?;
 
     let spi_config = spi::config::Config::new().baudrate(10.MHz().into()).data_mode(spi::config::MODE_3);
@@ -67,36 +105,46 @@ fn main() -> Result<()> {
         })?;
     }
 
+
+
     loop {
-        loop {
-            let boot_status = match lepton.get_boot_status() {
-                Ok(false) => {log::info!("retrying camera in 5 seconds"); false},
-                Ok(true) => {log::info!("Camera booted"); true},
-                Err(e) => {log::error!("ERROR: {:?}, retrying in 5 seconds", e); false}
-            };
-            if boot_status {break}
-            FreeRtos.delay_ms(5000u32);
-        }
-
-        log::info!("setting phase delay: {:?}", lepton.set_phase_delay(3)?);
-
-        log::info!("setting gpio mode: {:?}", lepton.set_gpio_mode(5)?);
-
-        let (gpio_mode, gpio_command_status) = lepton.get_gpio_mode()?;
-
-        log::info!("gpio mode: {} status: {}", gpio_mode, gpio_command_status);
-        let (phase_delay, phase_delay_command_status) = lepton.get_phase_delay()?;
-        log::info!("phase delay: {} status: {}", phase_delay, phase_delay_command_status);
+        setup_camera(&mut lepton)?;
 
         log::info!("Camera booted successfuly, waiting for frame");
         vsync.enable_interrupt()?;
         notification.wait(esp_idf_svc::hal::delay::BLOCK);
         log::info!("reading frame");
+        cs_l.set_low()?;
         lepton.read_frame()?;
-        for chunk in lepton.get_frame().chunks(256) {
-            let data_found = chunk.iter().any(|&x| x != 0);
-            if data_found {log::info!("Data found!!")} else {log::info!("no data found")}
-        }
+        log::info!("{:?}", lepton.get_frame());
+        cs_l.set_high()?;
     }
+    Ok(())
+}
+
+fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiBusDriver<'a, spi::SpiDriver<'a>>>) -> Result<(), I2cError> {
+    loop {
+        let boot_status = match lepton.get_boot_status() {
+            Ok(false) => {log::info!("retrying camera in 5 seconds"); false},
+            Ok(true) => {log::info!("Camera booted"); true},
+            Err(e) => {log::error!("ERROR: {:?}, retrying in 5 seconds", e); false}
+        };
+        if boot_status {break}
+        FreeRtos.delay_ms(5000u32);
+    }
+
+    log::info!("setting phase delay: {:?}", lepton.set_phase_delay(3)?);
+
+    log::info!("setting gpio mode: {:?}", lepton.set_gpio_mode(5)?);
+
+    // log::info!("setting video constant: {:?}", lepton.set_video_output_constant(1)?);
+
+    // log::info!("changing video output to constant: {:?}", lepton.set_video_output_source(3)?);
+
+    let (gpio_mode, gpio_command_status) = lepton.get_gpio_mode()?;
+    log::info!("gpio mode: {} status: {}", gpio_mode, gpio_command_status);
+
+    let (phase_delay, phase_delay_command_status) = lepton.get_phase_delay()?;
+    log::info!("phase delay: {} status: {}", phase_delay, phase_delay_command_status);
     Ok(())
 }
