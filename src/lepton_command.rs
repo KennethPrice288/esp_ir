@@ -79,5 +79,7 @@ impl LepCommand {
     lep_command_fn!(get_oem_phase_delay, Module::OEM, CommandType::Get, 0x58, 1);
     lep_command_fn!(set_oem_gpio_mode, Module::OEM, CommandType::Set, 0x54, 1);
     lep_command_fn!(get_oem_gpio_mode, Module::OEM, CommandType::Get, 0x54, 1);
+    lep_command_fn!(set_oem_video_output_source, Module::OEM, CommandType::Set, 0x2C, 1);
+    lep_command_fn!(get_oem_video_output_source, Module::OEM, CommandType::Get, 0x2C, 1);
 
 }

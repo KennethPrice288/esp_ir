@@ -14,67 +14,76 @@ where
     I2C: I2c<Error = E>, E: core::fmt::Debug
     {
 
-    #[allow(unused)]
+
     pub fn new(i2c: I2C) -> Result<Self, E> {
 
         Ok(LEPTONCCI {i2c, address:0x2a})
     }
 
-    #[allow(unused)]
+
     pub fn get_boot_status(&mut self) -> Result<bool, E> {
         let response = self.read_register(Register::CCIStatus)?;
         //camera has booted if bit 2 is 1
         Ok(response & (0b0000_00010) != 0)
     }
 
-    #[allow(unused)]
+
     pub fn get_interface_status(&mut self) -> Result<bool, E> {
         let response = self.read_register(Register::CCIStatus)?;
         Ok(response & (0b0000_0001) == 0)
     }
 
-    #[allow(unused)]
     pub fn get_status_code(&mut self) -> Result<LepStatus, E> {
-        let response = self.read_register(Register::CCIStatus).unwrap();
+        let response = self.read_register(Register::CCIStatus)?;
         let status = (response >> 8) as u8;
         Ok(LepStatus::from(status as i8))
     }
 
-    #[allow(unused)]
+
     pub fn set_phase_delay(&mut self, phase_delay:i16) -> Result<LepStatus, E> {
-        self.write_register(Register::CCIDataReg0, &phase_delay.to_be_bytes());
+        self.write_register(Register::CCIDataReg0, &phase_delay.to_be_bytes())?;
         let command = LepCommand::set_oem_phase_delay();
-        self.write_command(command, &[]);
+        self.write_command(command)?;
         self.poll_status()?;
         self.get_status_code()
     }
 
-    #[allow(unused)]
+
     pub fn get_phase_delay(&mut self) -> Result<(u16, LepStatus), E> {
         let command = LepCommand::get_oem_phase_delay();
-        self.write_command(command, &[]);
+        self.write_command(command)?;
         let data = self.read_register(Register::CCIDataReg0)?;
         let status_code = self.get_status_code()?;
         Ok((data, status_code))
     }
 
-    #[allow(unused)]
+
     pub fn set_gpio_mode(&mut self, gpio_mode: u16) -> Result<LepStatus, E> {
+        self.write_register(Register::CCIDataReg0, &gpio_mode.to_be_bytes())?;
         let command = LepCommand::set_oem_gpio_mode();
-        self.write_command(command, &gpio_mode.to_be_bytes());
-        self.poll_status();
+        self.write_command(command)?;
+        self.poll_status()?;
         self.get_status_code()
     }
 
-    #[allow(unused)]
+
     pub fn get_gpio_mode(&mut self) -> Result<(u16, LepStatus), E> {
         let command = LepCommand::get_oem_gpio_mode();
-        self.write_command(command, &[]);
-        self.poll_status();
+        self.write_command(command)?;
+        self.poll_status()?;
         let data = self.read_register(Register::CCIDataReg0)?;
         let status_code = self.get_status_code()?;
         Ok((data, status_code))
     }
+
+
+    pub fn set_oem_video_output_source(&mut self, video_output_source: u16) -> Result<LepStatus, E> {
+        self.write_register(Register::CCIDataReg0, &video_output_source.to_be_bytes())?;
+        let command = LepCommand::set_oem_video_output_source();
+        self.write_command(command)?;
+        self.poll_status()?;
+        self.get_status_code()
+    } 
 
 
     /// Writes into a register
@@ -91,15 +100,11 @@ where
     }
 
     //Write a command
-    fn write_command(&mut self, command: LepCommand, data: &[u8]) -> Result<(), E> {
+    fn write_command(&mut self, command: LepCommand) -> Result<(), E> {
         let command_id = command.get_command_id();
         let data_length = command.get_data_length();
-        let mut write_vec = Vec::with_capacity(2 + 2 + data.len());
-        write_vec.extend_from_slice(&command_id);
-        write_vec.extend_from_slice(&data_length);
-        write_vec.extend_from_slice(data);
-        log::info!("writing command: {:02x}{:02x}, {:02x}{:02x}", command_id[0], command_id[1], data_length[0], data_length[1]);
-        self.write_register(Register::CCICommandID, &write_vec)
+        self.write_register(Register::CCIDataLength, &data_length)?;
+        self.write_register(Register::CCICommandID, &command_id)
     }
 
     /// Reads a register using a `write_read` method.

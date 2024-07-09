@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     let mut spi_driver = SpiDriver::new(
         peripherals.spi2, spi_clk, mosi, Some(miso), &spi_driver_config)?;
 
-    let spi_config = spi::config::Config::new().baudrate(10.MHz().into());
+    let spi_config = spi::config::Config::new().baudrate(10.MHz().into()).data_mode(spi::config::MODE_3);
     let spi = spi::SpiBusDriver::new(spi_driver, &spi_config)?;
 
     let mut lepton = Lepton::new(i2c, spi)?;
@@ -80,11 +80,13 @@ fn main() -> Result<()> {
 
         log::info!("setting phase delay: {:?}", lepton.set_phase_delay(3)?);
 
-        // log::info!("setting gpio mode: {:?}", lepton.set_gpio_mode(5)?);
+        log::info!("setting gpio mode: {:?}", lepton.set_gpio_mode(5)?);
 
-        // log::info!("gpio mode: {}", lepton.get_gpio_mode()?);
-        let (phase_delay, status) = lepton.get_phase_delay()?;
-        log::info!("phase delay: {} status: {}", phase_delay, status);
+        let (gpio_mode, gpio_command_status) = lepton.get_gpio_mode()?;
+
+        log::info!("gpio mode: {} status: {}", gpio_mode, gpio_command_status);
+        let (phase_delay, phase_delay_command_status) = lepton.get_phase_delay()?;
+        log::info!("phase delay: {} status: {}", phase_delay, phase_delay_command_status);
 
         log::info!("Camera booted successfuly, waiting for frame");
         vsync.enable_interrupt()?;
@@ -92,7 +94,8 @@ fn main() -> Result<()> {
         log::info!("reading frame");
         lepton.read_frame()?;
         for chunk in lepton.get_frame().chunks(256) {
-            log::info!("{:?}", chunk);
+            let data_found = chunk.iter().any(|&x| x != 0);
+            if data_found {log::info!("Data found!!")} else {log::info!("no data found")}
         }
     }
     Ok(())
