@@ -9,7 +9,7 @@ pub struct Lepton <I2C, SPI> {
     cci: LEPTONCCI<I2C>,
     spi: SPI,
     frame: Box<[u8; FRAMESIZE]>
-}
+}g
 
 impl<I2C, SPI, E1, E2> Lepton<I2C, SPI> 
     where

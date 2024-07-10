@@ -1,5 +1,7 @@
 use std::num::NonZeroU32;
-
+use std::ops::DerefMut;
+use std::sync::{Arc, Mutex};
+use esp_idf_hal::io::Write;
 use anyhow::Result;
 use embedded_hal::delay::DelayNs;
 use esp_idf_hal::i2c::I2cError;
@@ -27,31 +29,6 @@ fn main() -> Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
 
     let peripherals = Peripherals::take().unwrap();
-
-    //start http server
-    let app_config = CONFIG;
-
-    let _wifi = wifi(
-        app_config.wifi_ssid,
-        app_config.wifi_psk,
-        peripherals.modem,
-        sysloop,
-    )?;
-
-    log::warn!("about to start server");
-
-    let mut server = EspHttpServer::new(&http::server::Configuration::default())?;
-    log::warn!("server started");
-    server.fn_handler(
-        "/",
-        http::Method::Get,
-        |request| -> core::result::Result<(), esp_idf_svc::io::EspIOError> {
-            let html = "hi";
-            let mut response = request.into_ok_response()?;
-            response.write(html.as_bytes())?;
-            Ok(())
-        },
-    )?;
 
     //setup camera
 
@@ -105,18 +82,54 @@ fn main() -> Result<()> {
         })?;
     }
 
+    let frame_data = Arc::new(Mutex::new(lepton.get_frame().clone()));
 
+    //start http server
+    let app_config = CONFIG;
 
+    let _wifi = wifi(
+        app_config.wifi_ssid,
+        app_config.wifi_psk,
+        peripherals.modem,
+        sysloop,
+    )?;
+
+    log::warn!("about to start server");
+
+    let mut server = EspHttpServer::new(&http::server::Configuration::default())?;
+    log::warn!("server started");
+    let frame_data_clone = frame_data.clone();
+
+    server.fn_handler(
+        "/",
+        http::Method::Get,
+        move |request| -> core::result::Result<(), esp_idf_svc::io::EspIOError> {
+            let mut frame_data = frame_data_clone.lock().unwrap();
+            let mut response = request.into_ok_response()?;
+            log::info!("there are: {} bytes in the frame", frame_data.len());
+            // response.write_all(frame_data.deref_mut().deref_mut())?;
+            let mut total_bytes_transferred = 0;
+            for chunk in frame_data.chunks(512) {
+                log::info!("transferred {} bytes", chunk.len());
+                response.write_all(chunk)?;
+                total_bytes_transferred += chunk.len();
+            }
+            log::info!("transferred {} bytes total", total_bytes_transferred);
+            Ok(())
+        },
+    )?;
+
+    setup_camera(&mut lepton)?;
     loop {
-        setup_camera(&mut lepton)?;
 
-        log::info!("Camera booted successfuly, waiting for frame");
+        // log::info!("Camera booted successfuly, waiting for frame");
         vsync.enable_interrupt()?;
         notification.wait(esp_idf_svc::hal::delay::BLOCK);
-        log::info!("reading frame");
+        // log::info!("reading frame");
         cs_l.set_low()?;
         lepton.read_frame()?;
-        log::info!("{:?}", lepton.get_frame());
+        let mut frame_data = frame_data.lock().unwrap();
+        *frame_data = lepton.get_frame().clone();
         cs_l.set_high()?;
     }
     Ok(())
