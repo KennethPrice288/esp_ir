@@ -1,5 +1,5 @@
 use crate::lepton_command::LepCommand;
-use embedded_hal::{i2c::I2c};
+use embedded_hal::i2c::I2c;
 use esp_idf_svc::hal::delay;
 use crate::lepton_error::LepStatus;
 
@@ -85,6 +85,12 @@ where
          LepCommand::set_oem_phase_delay(), 
          LepCommand::get_oem_phase_delay()
      );
+
+    generate_get_set_functions!(
+        set_telemetry_mode, get_telemetry_mode, u16,
+        LepCommand::set_sys_telemetry_mode(),
+        LepCommand::get_sys_telemetry_mode()
+    );
 
     /// Writes into a register
     #[allow(unused)]

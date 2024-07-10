@@ -1,5 +1,4 @@
 use std::num::NonZeroU32;
-use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use esp_idf_hal::io::Write;
 use anyhow::Result;
@@ -8,6 +7,7 @@ use esp_idf_hal::i2c::I2cError;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::{
     delay::FreeRtos, gpio::{self, InterruptType, PinDriver}, i2c::{I2cConfig, I2cDriver}, peripherals::Peripherals, prelude::*, spi::{self, SpiDriver}, task::notification::Notification
 }, http::{self, server::EspHttpServer}};
+
 
 use log;
 
@@ -23,6 +23,7 @@ pub struct Config {
     wifi_psk: &'static str,
 }
 
+#[allow(unreachable_code)]
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -40,8 +41,8 @@ fn main() -> Result<()> {
     let mut reset_l = PinDriver::output(peripherals.pins.gpio5)?;
 
     //setup cs pin
-    let mut cs_l = PinDriver::output(peripherals.pins.gpio2)?;
-
+    // let mut cs_l = PinDriver::output(peripherals.pins.gpio2)?;
+    let cs_l = peripherals.pins.gpio6;
 
     //startup sequence
     log::info!("starting camera boot sequence");
@@ -64,12 +65,13 @@ fn main() -> Result<()> {
     let spi_driver = SpiDriver::new(
         peripherals.spi2, spi_clk, mosi, Some(miso), &spi_driver_config)?;
 
-    let spi_config = spi::config::Config::new().baudrate(10.MHz().into()).data_mode(spi::config::MODE_3);
-    let spi = spi::SpiBusDriver::new(spi_driver, &spi_config)?;
+    let spi_config = spi::config::Config::new().baudrate(20.MHz().into()).data_mode(spi::config::MODE_3);
+    // let spi = spi::SpiBusDriver::new(spi_driver, &spi_config)?;
+    let spi = spi::SpiDeviceDriver::new(spi_driver, Some(cs_l), &spi_config)?;
 
     let mut lepton = Lepton::new(i2c, spi)?;
 
-    let mut vsync = PinDriver::input(peripherals.pins.gpio21)?;
+    let mut vsync = PinDriver::input(peripherals.pins.gpio4)?;
     vsync.set_pull(gpio::Pull::Down)?;
     vsync.set_interrupt_type(InterruptType::PosEdge)?;
 
@@ -94,27 +96,27 @@ fn main() -> Result<()> {
         sysloop,
     )?;
 
-    log::warn!("about to start server");
 
     let mut server = EspHttpServer::new(&http::server::Configuration::default())?;
-    log::warn!("server started");
     let frame_data_clone = frame_data.clone();
 
     server.fn_handler(
         "/",
         http::Method::Get,
         move |request| -> core::result::Result<(), esp_idf_svc::io::EspIOError> {
-            let mut frame_data = frame_data_clone.lock().unwrap();
+            let frame_data = frame_data_clone.lock().unwrap();
             let mut response = request.into_ok_response()?;
-            log::info!("there are: {} bytes in the frame", frame_data.len());
+            // log::info!("there are: {} bytes in the frame", frame_data.len());
             // response.write_all(frame_data.deref_mut().deref_mut())?;
-            let mut total_bytes_transferred = 0;
-            for chunk in frame_data.chunks(512) {
-                log::info!("transferred {} bytes", chunk.len());
-                response.write_all(chunk)?;
-                total_bytes_transferred += chunk.len();
-            }
-            log::info!("transferred {} bytes total", total_bytes_transferred);
+            // let mut total_bytes_transferred = 0;
+            response.write_all(&**frame_data)?;
+            log::info!("transferred {} bytes", frame_data.len());
+            // for chunk in frame_data.chunks(512) {
+            //     log::info!("transferred {} bytes", chunk.len());
+            //     response.write_all(chunk)?;
+            //     total_bytes_transferred += chunk.len();
+            // }
+            // log::info!("transferred {} bytes total", total_bytes_transferred);
             Ok(())
         },
     )?;
@@ -126,16 +128,19 @@ fn main() -> Result<()> {
         vsync.enable_interrupt()?;
         notification.wait(esp_idf_svc::hal::delay::BLOCK);
         // log::info!("reading frame");
-        cs_l.set_low()?;
-        lepton.read_frame()?;
+        // cs_l.set_low()?;
+        match lepton.read_frame() {
+            Ok(_) => {},
+            Err(_) => {log::warn!("Desync from Camera")}
+        }
         let mut frame_data = frame_data.lock().unwrap();
         *frame_data = lepton.get_frame().clone();
-        cs_l.set_high()?;
+        // cs_l.set_high()?;
     }
     Ok(())
 }
 
-fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiBusDriver<'a, spi::SpiDriver<'a>>>) -> Result<(), I2cError> {
+fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiDeviceDriver<'a, spi::SpiDriver<'a>>>) -> Result<(), I2cError> {
     loop {
         let boot_status = match lepton.get_boot_status() {
             Ok(false) => {log::info!("retrying camera in 5 seconds"); false},
@@ -150,14 +155,24 @@ fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiBusDriver<'a, spi::Sp
 
     log::info!("setting gpio mode: {:?}", lepton.set_gpio_mode(5)?);
 
-    // log::info!("setting video constant: {:?}", lepton.set_video_output_constant(1)?);
+    // log::info!("setting video constant: {:?}", lepton.set_video_output_constant(0xFFFF)?);
 
     // log::info!("changing video output to constant: {:?}", lepton.set_video_output_source(3)?);
+
+    let (telemetry_mode, telemetry_mode_command_status) = lepton.get_telemetry_mode()?;
+    log::info!("telemetry mode: {} status: {}", telemetry_mode, telemetry_mode_command_status);
 
     let (gpio_mode, gpio_command_status) = lepton.get_gpio_mode()?;
     log::info!("gpio mode: {} status: {}", gpio_mode, gpio_command_status);
 
     let (phase_delay, phase_delay_command_status) = lepton.get_phase_delay()?;
     log::info!("phase delay: {} status: {}", phase_delay, phase_delay_command_status);
+
+    let (video_constant, video_constant_get_command_status) = lepton.get_video_output_constant()?;
+    log::info!("video constant: {} status: {}", video_constant, video_constant_get_command_status);
+
+    let (video_source, video_source_get_command_status) = lepton.get_video_output_source()?;
+    log::info!("video source: {} status: {}", video_source, video_source_get_command_status);
+
     Ok(())
 }

@@ -1,4 +1,3 @@
-#![deny(unsafe_code)]
 
 pub mod lepton;
 pub mod lepton_error;

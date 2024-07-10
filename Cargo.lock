@@ -591,6 +591,7 @@ dependencies = [
  "embuild",
  "esp-idf-hal",
  "esp-idf-svc",
+ "esp-idf-sys",
  "log",
  "toml-cfg",
 ]
