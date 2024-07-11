@@ -68,7 +68,11 @@ pub fn wifi(
 
     info!("Waiting for DHCP lease...");
 
-    wifi.wait_netif_up()?;
+    loop {match wifi.wait_netif_up() {
+        Ok(_) => {break}
+        Err(_) => {}
+    } };
+    
 
     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
 

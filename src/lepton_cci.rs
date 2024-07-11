@@ -92,6 +92,12 @@ where
         LepCommand::get_sys_telemetry_mode()
     );
 
+    generate_get_set_functions!(
+        set_agc_enable, get_agc_enable, u16,
+        LepCommand::set_agc_enable(),
+        LepCommand::get_agc_enable()
+    );
+
     /// Writes into a register
     #[allow(unused)]
     fn write_register(&mut self, register: Register, payload: &[u8]) -> Result<(), E> {

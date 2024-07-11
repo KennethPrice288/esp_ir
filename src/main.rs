@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use esp_idf_hal::io::Write;
@@ -7,7 +8,12 @@ use esp_idf_hal::i2c::I2cError;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::{
     delay::FreeRtos, gpio::{self, InterruptType, PinDriver}, i2c::{I2cConfig, I2cDriver}, peripherals::Peripherals, prelude::*, spi::{self, SpiDriver}, task::notification::Notification
 }, http::{self, server::EspHttpServer}};
+use esp_ir::lepton::LeptonError;
 
+const PACKETSIZE:usize = 164;
+
+static CRC:crc::Crc::<u16> = crc::Crc::<u16>::new(&crc::CRC_16_XMODEM);
+static LEPTON: Mutex<RefCell<Option<Lepton<I2cDriver, spi::SpiDeviceDriver<SpiDriver>>>>> = Mutex::new(RefCell::new(None));
 
 use log;
 
@@ -28,6 +34,10 @@ fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
     let sysloop = EspSystemEventLoop::take()?;
+
+    unsafe {
+        // esp_idf_sys::esp_task_wdt_deinit();
+    }
 
     let peripherals = Peripherals::take().unwrap();
 
@@ -56,7 +66,7 @@ fn main() -> Result<()> {
     let i2c_config = I2cConfig::new().baudrate(400.kHz().into());
     let i2c = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_config)?;
 
-    let miso = peripherals.pins.gpio0;
+    let miso = peripherals.pins.gpio1;
     let mosi = peripherals.pins.gpio9;
     let spi_clk = peripherals.pins.gpio3;
 
@@ -104,43 +114,95 @@ fn main() -> Result<()> {
         "/",
         http::Method::Get,
         move |request| -> core::result::Result<(), esp_idf_svc::io::EspIOError> {
-            let frame_data = frame_data_clone.lock().unwrap();
+
+            log::info!("responding to request");
+
             let mut response = request.into_ok_response()?;
-            // log::info!("there are: {} bytes in the frame", frame_data.len());
-            // response.write_all(frame_data.deref_mut().deref_mut())?;
-            // let mut total_bytes_transferred = 0;
+            {
+            let frame_data = frame_data_clone.lock().unwrap();
+
             response.write_all(&**frame_data)?;
-            log::info!("transferred {} bytes", frame_data.len());
-            // for chunk in frame_data.chunks(512) {
-            //     log::info!("transferred {} bytes", chunk.len());
-            //     response.write_all(chunk)?;
-            //     total_bytes_transferred += chunk.len();
-            // }
-            // log::info!("transferred {} bytes total", total_bytes_transferred);
+            }
+            log::info!("finished responding to request");
+
             Ok(())
         },
     )?;
 
     setup_camera(&mut lepton)?;
+    // Get the handle of the currently running task
+    let current_task = unsafe { esp_idf_sys::xTaskGetCurrentTaskHandle() };
+
+    // Get the current priority of the task
+    let current_priority = unsafe { esp_idf_sys::uxTaskPriorityGet(current_task) };
+
+    // Set the task priority to a high value (e.g., configMAX_PRIORITIES - 1)
+    let high_priority = esp_idf_sys::configMAX_PRIORITIES - 1;
     loop {
 
-        // log::info!("Camera booted successfuly, waiting for frame");
+        log::info!("waiting for frame");
         vsync.enable_interrupt()?;
         notification.wait(esp_idf_svc::hal::delay::BLOCK);
-        // log::info!("reading frame");
-        // cs_l.set_low()?;
-        match lepton.read_frame() {
-            Ok(_) => {},
-            Err(_) => {log::warn!("Desync from Camera")}
+        log::info!("reading frame");
+
+        
+        
+        unsafe {
+            esp_idf_sys::vTaskPrioritySet(current_task, high_priority);
         }
         let mut frame_data = frame_data.lock().unwrap();
-        *frame_data = lepton.get_frame().clone();
-        // cs_l.set_high()?;
+        // unsafe {esp_idf_sys::vTaskSuspendAll();}
+        let read_frame_result = lepton.read_frame();
+        // unsafe {esp_idf_sys::xTaskResumeAll();}
+        unsafe {
+            esp_idf_sys::vTaskPrioritySet(current_task, high_priority);
+        }
+        log::info!("frame read");
+            match read_frame_result {
+                Ok(frame) => {
+                    log::info!("received frame");
+                    let mut discard = false;
+                    for packet in frame.chunks(PACKETSIZE) {
+                        if packet[0] & 0x0F == 0x0F {
+                            discard = true;
+                            log::warn!("DISCARD");
+                            break;
+                        }
+
+                        if !check_crc(packet) {
+                            log::warn!("DESYNC");
+                            discard = true;
+                            break;
+                        }
+                    }
+                    if !discard {
+                    log::info!("setting frame");
+                    lepton.set_frame(&frame).unwrap();
+                    *frame_data = lepton.get_frame().clone();
+                    } else {
+                        log::warn!("found discard, trying to resync");
+                        FreeRtos::delay_ms(500);
+
+                    }
+                },
+                Err(_) => {log::warn!("SPI Error!")}
+        }
     }
     Ok(())
 }
 
-fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiDeviceDriver<'a, spi::SpiDriver<'a>>>) -> Result<(), I2cError> {
+fn check_crc(packet: &[u8]) -> bool {
+
+    let mut data = Vec::new();
+    data.extend_from_slice(packet);
+    data[0] &= 0x0F; //clear 4 msb of ID
+    data[2] &= 0x00;
+    data[3] &= 0x00; //clear entire CRC field
+
+    CRC.checksum(&data) == u16::from_be_bytes([packet[2], packet[3]])
+}
+
+fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiDeviceDriver<'a, spi::SpiDriver<'a>>>) -> Result<(), LeptonError<I2cError, spi::SpiError>> {
     loop {
         let boot_status = match lepton.get_boot_status() {
             Ok(false) => {log::info!("retrying camera in 5 seconds"); false},
@@ -151,9 +213,11 @@ fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiDeviceDriver<'a, spi:
         FreeRtos.delay_ms(5000u32);
     }
 
-    log::info!("setting phase delay: {:?}", lepton.set_phase_delay(3)?);
+    log::info!("setting phase delay: {:?}", lepton.set_phase_delay(-3)?);
 
     log::info!("setting gpio mode: {:?}", lepton.set_gpio_mode(5)?);
+
+    log::info!("setting AGC enable: {:?}", lepton.set_agc_enable(1)?);
 
     // log::info!("setting video constant: {:?}", lepton.set_video_output_constant(0xFFFF)?);
 
@@ -173,6 +237,9 @@ fn setup_camera<'a>(lepton: &mut Lepton<I2cDriver, spi::SpiDeviceDriver<'a, spi:
 
     let (video_source, video_source_get_command_status) = lepton.get_video_output_source()?;
     log::info!("video source: {} status: {}", video_source, video_source_get_command_status);
+
+    let (agc_enable, agc_enable_status) = lepton.get_agc_enable()?;
+    log::info!("agc enable: {} status: {}", agc_enable, agc_enable_status);
 
     Ok(())
 }
